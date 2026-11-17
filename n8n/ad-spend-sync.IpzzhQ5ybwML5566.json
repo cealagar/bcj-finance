@@ -1,0 +1,363 @@
+{
+ "name": "Body by Coach Jeff: Ad Spend Sync (Meta \u2192 BCJ Finance)",
+ "nodes": [
+  {
+   "id": "90012bc2-d5eb-41a4-a6e0-2b0c365ed816",
+   "name": "Daily 06:17 PH",
+   "type": "n8n-nodes-base.scheduleTrigger",
+   "typeVersion": 1.2,
+   "position": [
+    0,
+    0
+   ],
+   "parameters": {
+    "rule": {
+     "interval": [
+      {
+       "field": "cronExpression",
+       "expression": "17 6 * * *"
+      }
+     ]
+    }
+   }
+  },
+  {
+   "id": "a3cd03ac-65a9-4cd5-babb-4893bcc83587",
+   "name": "Run now",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    200
+   ],
+   "parameters": {
+    "httpMethod": "GET",
+    "path": "bcj-ads-sync-r7k2",
+    "responseMode": "lastNode",
+    "options": {}
+   },
+   "webhookId": "bcj-ads-sync-r7k2"
+  },
+  {
+   "id": "cf745c56-1a4c-4836-a4c2-93a9095abffe",
+   "name": "Insights (daily x campaign)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    240,
+    100
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://graph.facebook.com/v21.0/act_1751277719655800/insights?level=campaign&time_increment=1&date_preset=maximum&limit=500&fields=campaign_id,campaign_name,spend,impressions,clicks,actions,account_currency",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "facebookGraphApi",
+    "options": {
+     "timeout": 60000
+    }
+   },
+   "credentials": {
+    "facebookGraphApi": {
+     "id": "UUocD5BsqD2ebQuA",
+     "name": "Meta Ads read (BCJ Finance) \u2014 paste ads_read token"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "0f35e4c5-725e-49a0-b49f-d035409b2212",
+   "name": "Billing charges",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    460,
+    100
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://graph.facebook.com/v21.0/act_1751277719655800/activities?limit=500&since=2025-01-01&fields=event_type,event_time,extra_data",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "facebookGraphApi",
+    "options": {
+     "timeout": 60000
+    }
+   },
+   "credentials": {
+    "facebookGraphApi": {
+     "id": "UUocD5BsqD2ebQuA",
+     "name": "Meta Ads read (BCJ Finance) \u2014 paste ads_read token"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "a9667000-d91a-4184-9ca0-5e4b17659932",
+   "name": "Account",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    680,
+    100
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://graph.facebook.com/v21.0/act_1751277719655800?fields=name,currency,amount_spent,balance,spend_cap,account_status,funding_source_details",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "facebookGraphApi",
+    "options": {
+     "timeout": 60000
+    }
+   },
+   "credentials": {
+    "facebookGraphApi": {
+     "id": "UUocD5BsqD2ebQuA",
+     "name": "Meta Ads read (BCJ Finance) \u2014 paste ads_read token"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "9f848033-4d03-4772-9408-d82045b657f7",
+   "name": "Build rows",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    900,
+    100
+   ],
+   "parameters": {
+    "jsCode": "const ins = $('Insights (daily x campaign)').first().json || {}; const bil = $('Billing charges').first().json || {}; const acc = $('Account').first().json || {};\nif (ins.error || !Array.isArray(ins.data)) return [{ json: { ok: false, error: (ins.error && ins.error.message) || 'No insights (token missing or no ads_read permission?)' } }];\nconst LEADS = ['lead', 'onsite_conversion.lead_grouped', 'offsite_conversion.fb_pixel_lead', 'onsite_conversion.messaging_conversation_started_7d'];\nconst rows = [['date', 'campaign_id', 'campaign', 'spend', 'impressions', 'clicks', 'leads', 'messages', 'updated']];\nconst now = $now.setZone('Asia/Manila').toFormat('yyyy-MM-dd HH:mm');\nins.data.forEach(r => { const a = r.actions || []; const g = t => a.filter(x => x.action_type === t).reduce((s, x) => s + Number(x.value || 0), 0);\n  rows.push([r.date_start, r.campaign_id, r.campaign_name, Number(r.spend || 0), Number(r.impressions || 0), Number(r.clicks || 0), Math.max(g('lead'), g('onsite_conversion.lead_grouped'), g('offsite_conversion.fb_pixel_lead')), g('onsite_conversion.messaging_conversation_started_7d'), now]); });\nconst card = (acc.funding_source_details && acc.funding_source_details.display_string) || '';\nconst brows = [['date', 'id', 'amount', 'status', 'reason', 'payment', 'updated']];\n(bil.data || []).filter(e => e.event_type === 'ad_account_billing_charge').forEach(e => { let x = {}; try { x = JSON.parse(e.extra_data || '{}'); } catch (err) {}\n  brows.push([DateTime.fromISO(e.event_time).setZone('Asia/Manila').toFormat('yyyy-MM-dd HH:mm'), x.transaction_id || '', Number(x.new_value || 0) / 100, 'charged', 'Account billed (' + (x.currency || 'PHP') + ')', card, now]); });\nreturn [{ json: { ok: true, n: rows.length - 1, nb: brows.length - 1, billing_error: bil.error ? bil.error.message : '', account: { name: acc.name, card, amount_spent: Number(acc.amount_spent || 0) / 100, balance: Number(acc.balance || 0) / 100, spend_cap: Number(acc.spend_cap || 0) / 100 },\n  clear: { ranges: [\"'Ad Spend'!A:I\", ...(brows.length > 1 ? [\"'Ad Billing'!A:G\"] : [])] },\n  write: { valueInputOption: 'RAW', data: [{ range: \"'Ad Spend'!A1\", values: rows }, ...(brows.length > 1 ? [{ range: \"'Ad Billing'!A1\", values: brows }] : [])] } } }];"
+   }
+  },
+  {
+   "id": "d463bf9e-fcfe-4ba2-a07a-cd39434455d0",
+   "name": "OK?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2,
+   "position": [
+    1120,
+    100
+   ],
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "o1",
+       "leftValue": "={{ $json.ok }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   }
+  },
+  {
+   "id": "c1f0500a-3a0a-406b-8dc5-5e28a5df872a",
+   "name": "Clear tabs",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1340,
+    40
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values:batchClear",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.clear) }}",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "dbae135b-9442-4578-b4aa-d2a9386ff8d0",
+   "name": "Write tabs",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1560,
+    40
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values:batchUpdate",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($('Build rows').first().json.write) }}",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "bc798a7c-dd80-4499-8617-90807fe149f9",
+   "name": "Save account",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1780,
+    40
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Build rows').first().json; const s = $getWorkflowStaticData('global'); s.account = Object.assign({}, d.account, { synced: $now.setZone('Asia/Manila').toFormat('yyyy-MM-dd HH:mm') }); return [{ json: { ok: true, rows: d.n, billing_rows: d.nb, billing_error: d.billing_error, account: s.account } }];"
+   }
+  },
+  {
+   "id": "74070745-2de3-4742-a6b9-388262462a7d",
+   "name": "Alert Jeff (sync failed)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1340,
+    200
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://n8n.srv1170024.hstgr.cloud/webhook/bcj-notify-jeff-x7p2",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: '\u26a0\ufe0f BCJ Finance ad spend sync failed: ' + $json.error }) }}",
+    "options": {}
+   },
+   "onError": "continueRegularOutput"
+  }
+ ],
+ "connections": {
+  "Daily 06:17 PH": {
+   "main": [
+    [
+     {
+      "node": "Insights (daily x campaign)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Run now": {
+   "main": [
+    [
+     {
+      "node": "Insights (daily x campaign)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Insights (daily x campaign)": {
+   "main": [
+    [
+     {
+      "node": "Billing charges",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Billing charges": {
+   "main": [
+    [
+     {
+      "node": "Account",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Account": {
+   "main": [
+    [
+     {
+      "node": "Build rows",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build rows": {
+   "main": [
+    [
+     {
+      "node": "OK?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Clear tabs": {
+   "main": [
+    [
+     {
+      "node": "Write tabs",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Write tabs": {
+   "main": [
+    [
+     {
+      "node": "Save account",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "OK?": {
+   "main": [
+    [
+     {
+      "node": "Clear tabs",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Alert Jeff (sync failed)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Asia/Manila"
+ }
+}

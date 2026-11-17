@@ -1,0 +1,1682 @@
+{
+ "name": "Body by Coach Jeff: Manual Payments (QR/bank + approvals)",
+ "nodes": [
+  {
+   "id": "70fab0ba-50ae-42ae-bdf3-10ab6e751218",
+   "name": "Pay Submit",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    0
+   ],
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "bcj-pay-submit",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "https://bodybycoachjeff.com,https://www.bodybycoachjeff.com",
+     "binaryPropertyName": "receipt"
+    }
+   },
+   "webhookId": "bcj-pay-submit"
+  },
+  {
+   "id": "6fa5bfa8-761c-43c6-92cd-732a09fe9912",
+   "name": "Prep Submit",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    220,
+    0
+   ],
+   "parameters": {
+    "jsCode": "const CAT = {\n  reserve: { label: 'Coaching slot reservation', amount: 1000, files: [] },\n  flb: { label: 'Fat Loss Blueprint (ebook)', amount: 249, files: ['flb'] },\n  mp: { label: 'Pinoy Meal Plan (ebook)', amount: 299, files: ['mp'] },\n  bfbm: { label: \"Built For Busy, Men's edition (ebook)\", amount: 799, files: ['bfbm'] },\n  bfbw: { label: \"Built For Busy, Women's edition (ebook)\", amount: 799, files: ['bfbw'] },\n  'bundle-men': { label: \"Pinoy Meal Plan + Built For Busy, Men's (ebook bundle)\", amount: 999, files: ['mp', 'bfbm'] },\n  'bundle-women': { label: \"Pinoy Meal Plan + Built For Busy, Women's (ebook bundle)\", amount: 999, files: ['mp', 'bfbw'] },\n  'all3-men': { label: \"All 3 ebooks, Men's (Blueprint + Meal Plan + Built For Busy)\", amount: 1199, files: ['flb', 'mp', 'bfbm'] },\n  'all3-women': { label: \"All 3 ebooks, Women's (Blueprint + Meal Plan + Built For Busy)\", amount: 1199, files: ['flb', 'mp', 'bfbw'] },\n  coach12: { label: '12-week 1-on-1 online coaching', amount: 9000, files: [], weeks: 12 },\n  coach16: { label: '16-week 1-on-1 online coaching', amount: 12000, files: [], weeks: 16 },\n  coach24: { label: '24-week 1-on-1 online coaching', amount: 17000, files: [], weeks: 24 }\n};\nconst DRIVEF = { flb: '1VIbXBfVn8_UcSagsmkusRgQgR4Tt4XjH', mp: '1I3dfvFecNJRxjPtfIQt-vy5mlrKqeTuc', bfbm: '1CDw8p6Qmfl-BHZK7ejBBNs3WZY7rnaPH', bfbw: '1c_LL1bLSJp9lvl1fjeS9_oQJDprGYNwF' };\nconst peso = n => '\\u20b1' + Number(n || 0).toLocaleString('en-US');\n\nasync function coachPrice(helpers, P, rawCode, email, mobile) {\n  let pr = {}; try { pr = await helpers.httpRequest({ url: 'https://n8n.srv1170024.hstgr.cloud/webhook/bcj-promo-public', json: true }); } catch (e) {}\n  const r = (pr.rates || []).find(x => Number(x.weeks) === P.weeks) || {};\n  const regular = Number(r.regular || P.amount);\n  const promoPct = (pr.active && Number(pr.slots || 0) > 0) ? Number(pr.pct || 0) : 0;\n  let pct = promoPct, ref = '', why = promoPct ? pr.pct + '% promo' : '';\n  const code = String(rawCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');\n  if (code) { try {\n    const L = await helpers.httpRequest({ url: 'https://bodybycoachjeff.com/wp-json/bcj-ref/v1/lookup?code=' + encodeURIComponent(code) + '&email=' + encodeURIComponent(email || '') + '&mobile=' + encodeURIComponent(mobile || ''), headers: { 'x-bcj-ref': 'bcjref___SECRET__' }, json: true });\n    if (L && L.ok && L.channel && !L.known) { const cf = L.cfg || {}; const base = Number(cf.base || 10), edge = Number(cf.edge ?? 3), cap = Number(cf.cap || 35);\n      let f = Math.max(base, promoPct > 0 ? promoPct + edge : 0); f = Math.min(f, Math.max(promoPct, cap)); pct = f; ref = L.code; why = f + '% off (' + (L.label || L.code) + ')'; }\n    else if (L && L.ok && !L.channel && L.id) { const cf = L.cfg || {}; const rp = Number(cf.ref_pct || 15), edge = Number(cf.edge_pts ?? 5), cap = Number(cf.cap_pct || 35);\n      let f = Math.max(rp, promoPct > 0 ? promoPct + edge : 0); f = Math.min(f, Math.max(promoPct, cap)); pct = f; ref = L.code; why = f + '% off (referral ' + L.code + ')'; }\n  } catch (e) {} }\n  return { amount: Math.round(regular * (100 - pct) / 100), regular, pct, ref, why };\n}\nconst esc = s => String(s == null ? '' : s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));\n\nconst w = $('Pay Submit').first(); const b = w.json.body || {};\nconst clean = (s, n) => String(s || '').replace(/[<>]/g, '').trim().slice(0, n);\nconst product = clean(b.product, 30); const P = CAT[product];\nconst bin = w.binary || {}; const key = Object.keys(bin)[0];\nif (b.website) return [{ json: { ok: false, error: 'spam' } }];\nif (!P) return [{ json: { ok: false, error: 'unknown_product' } }];\nif (!key) return [{ json: { ok: false, error: 'no_file' } }];\nlet refCode = '';\nif (P.weeks) { const q = await coachPrice(this.helpers, P, b.code, b.email, b.wa); P.amount = q.amount; refCode = q.ref; if (q.why) P.label += ' (' + q.why + ')'; }\nconst name = clean(b.name, 80), email = clean(b.email, 120).toLowerCase(), wa = clean(b.wa, 30);\nif (!name || !/^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$/.test(email)) return [{ json: { ok: false, error: 'details' } }];\nconst amt = Math.round(Number(String(b.amount_paid || '').replace(/[^\\d.]/g, '')) || 0);\nconst now = $now.setZone('Asia/Manila');\nconst id = 'P' + now.toFormat('yyMMdd') + '-' + Math.random().toString(36).slice(2, 6).toUpperCase();\nconst token = Array.from({ length: 24 }, () => 'abcdefghijkmnpqrstuvwxyz23456789'[Math.floor(Math.random() * 32)]).join('');\nconst mime = bin[key].mimeType || ''; const isImage = /^image\\//.test(mime);\nlet ext = (bin[key].fileExtension || (mime.split('/')[1] || 'jpg')).toLowerCase().replace('jpeg', 'jpg');\nconst method = clean(b.method, 40), ref = clean(b.ref, 60), start = clean(b.start_pref, 40);\nconst diff = amt - P.amount;\nconst caption = '\ud83d\udd25\ud83d\udcb3 <b>NEW PAYMENT TO CHECK</b> ' + id + '\\n<b>' + esc(P.label) + '</b>\\nExpected: ' + peso(P.amount) + '\\nTyped: ' + peso(amt) + (diff ? ' \u26a0\ufe0f ' + (diff > 0 ? '+' : '') + diff : ' \u2713') +\n  '\\nMethod: ' + esc(method) + '\\nRef no: ' + esc(ref || '(not given)') + '\\n' + esc(name) + ' \u00b7 ' + esc(email) + (wa ? ' \u00b7 ' + esc(wa) : '') + (start ? '\\nStart: ' + esc(start) : '');\nconst wamsg = '\ud83d\udd25 PAYMENT TO CHECK (' + id + ')\\n' + P.label + '\\n' + peso(amt) + ' via ' + method + ' \u00b7 ref ' + (ref || '-') + '\\n' + name + (wa ? ' \u00b7 ' + wa : '') + '\\nApprove in BCJ Coach \u203a Payments or on Telegram (Dave).';\nreturn [{ json: { ok: true, id, token, product, label: P.label, amount: P.amount, amt, name, email, wa, start, method, ref, isImage, caption, wamsg,\n  fileName: id + ' ' + name.replace(/[^\\w ]/g, '') + ' ' + product + '.' + ext,\n  created: now.toFormat('yyyy-MM-dd HH:mm'), page: clean(b.page, 200), utm: clean(b.utm, 300), ga_cid: clean(b.ga_cid, 60), ga_sid: clean(b.ga_sid, 30), fbp: clean(b.fbp, 80), fbc: clean(b.fbc, 200), ref_code: refCode }, binary: { receipt: bin[key] } }];\n"
+   }
+  },
+  {
+   "id": "aeb030b6-f558-4005-bc49-96037bdc5a46",
+   "name": "Submit OK?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2,
+   "position": [
+    440,
+    0
+   ],
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "aeaf93ae-b297-4059-8eac-fc048eb6a5e5",
+       "leftValue": "={{ $json.ok }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   }
+  },
+  {
+   "id": "eddf366e-f897-468a-885c-92e1d6d165d6",
+   "name": "Save Pay Receipt",
+   "type": "n8n-nodes-base.googleDrive",
+   "typeVersion": 3,
+   "position": [
+    660,
+    -100
+   ],
+   "parameters": {
+    "inputDataFieldName": "receipt",
+    "name": "={{ $json.fileName }}",
+    "driveId": {
+     "__rl": true,
+     "mode": "list",
+     "value": "My Drive"
+    },
+    "folderId": {
+     "__rl": true,
+     "mode": "id",
+     "value": "123r4FNmd913qWWSsFv31LTnYm-ClpYRp"
+    },
+    "options": {}
+   },
+   "credentials": {
+    "googleDriveOAuth2Api": {
+     "id": "es1h5Z5Qp1Hcy9Dp",
+     "name": "Google Drive (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "13ed0ce2-350f-43df-b2f9-70ec4b77cf80",
+   "name": "Carry Pay",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    880,
+    -100
+   ],
+   "parameters": {
+    "jsCode": "const m = $('Prep Submit').first(); const id = $json.id || ''; return [{ json: Object.assign({}, m.json, { url: $json.webViewLink || (id ? 'https://drive.google.com/file/d/' + id + '/view' : '') }), binary: m.binary }];"
+   }
+  },
+  {
+   "id": "16e1c4b7-c6a4-4dce-adb5-7db60273bb37",
+   "name": "Append Pay Row",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1100,
+    -100
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values/'Manual%20Payments'!A1%3AW:append?valueInputOption=RAW&insertDataOption=INSERT_ROWS",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ values: [[ $json.id, $json.token, $json.created, $json.product, $json.label, $json.amount, $json.name, $json.email, $json.wa, $json.start, $json.method, $json.ref, $json.amt, $json.url, 'submitted', '', $json.page, $json.utm, $json.ga_cid, $json.ga_sid, $json.fbp, $json.fbc, $json.ref_code ]] }) }}",
+    "options": {
+     "timeout": 20000
+    },
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "5e272d82-1c65-4e42-b068-d53a3e824e69",
+   "name": "Respond Submit OK",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    1320,
+    -100
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: true, id: $('Carry Pay').first().json.id, t: $('Carry Pay').first().json.token }) }}",
+    "options": {}
+   }
+  },
+  {
+   "id": "512da19c-ac1c-4c07-b13a-c04b7bd1ba92",
+   "name": "Restore Receipt",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1430,
+    -100
+   ],
+   "parameters": {
+    "jsCode": "// Sheets/respond nodes drop the upload; bring the receipt file back for Telegram\nreturn [{ json: $('Carry Pay').first().json, binary: $('Pay Submit').first().binary }];"
+   }
+  },
+  {
+   "id": "4943e056-3d90-454c-b73a-3ec80dddbe38",
+   "name": "Pay is image?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2,
+   "position": [
+    1540,
+    -100
+   ],
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "e93f4fd6-e7ac-4876-afb6-cdde0cb4f44f",
+       "leftValue": "={{ $('Carry Pay').first().json.isImage }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   }
+  },
+  {
+   "id": "1cf13a47-566a-4ed1-b002-b676aef82c50",
+   "name": "TG Pay Photo",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    1760,
+    -200
+   ],
+   "parameters": {
+    "operation": "sendPhoto",
+    "chatId": "1921033615",
+    "binaryData": true,
+    "binaryPropertyName": "receipt",
+    "replyMarkup": "inlineKeyboard",
+    "inlineKeyboard": {
+     "rows": [
+      {
+       "row": {
+        "buttons": [
+         {
+          "text": "\u2705 Approve",
+          "additionalFields": {
+           "callback_data": "=mpay:ok:{{ $('Carry Pay').first().json.id }}"
+          }
+         },
+         {
+          "text": "\u274c Reject",
+          "additionalFields": {
+           "callback_data": "=mpay:no:{{ $('Carry Pay').first().json.id }}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    },
+    "additionalFields": {
+     "caption": "={{ $('Carry Pay').first().json.caption + ($('Carry Pay').first().json.url ? '\\n<a href=\"' + $('Carry Pay').first().json.url + '\">Receipt in Drive</a>' : '') }}",
+     "parse_mode": "HTML",
+     "appendAttribution": false
+    }
+   },
+   "credentials": {
+    "telegramApi": {
+     "id": "KJCTPoHveAmhDi5Z",
+     "name": "Telegram (bbcj_dave_bot)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "afb528d7-626b-44b5-a0f3-047b08fe65cd",
+   "name": "TG Pay File",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    1760,
+    0
+   ],
+   "parameters": {
+    "operation": "sendDocument",
+    "chatId": "1921033615",
+    "binaryData": true,
+    "binaryPropertyName": "receipt",
+    "replyMarkup": "inlineKeyboard",
+    "inlineKeyboard": {
+     "rows": [
+      {
+       "row": {
+        "buttons": [
+         {
+          "text": "\u2705 Approve",
+          "additionalFields": {
+           "callback_data": "=mpay:ok:{{ $('Carry Pay').first().json.id }}"
+          }
+         },
+         {
+          "text": "\u274c Reject",
+          "additionalFields": {
+           "callback_data": "=mpay:no:{{ $('Carry Pay').first().json.id }}"
+          }
+         }
+        ]
+       }
+      }
+     ]
+    },
+    "additionalFields": {
+     "caption": "={{ $('Carry Pay').first().json.caption + ($('Carry Pay').first().json.url ? '\\n<a href=\"' + $('Carry Pay').first().json.url + '\">Receipt in Drive</a>' : '') }}",
+     "parse_mode": "HTML",
+     "appendAttribution": false
+    }
+   },
+   "credentials": {
+    "telegramApi": {
+     "id": "KJCTPoHveAmhDi5Z",
+     "name": "Telegram (bbcj_dave_bot)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "35f6249c-094f-4cec-b79d-0e49ee2d4915",
+   "name": "WA Pay Alert",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1980,
+    -100
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://n8n.srv1170024.hstgr.cloud/webhook/bcj-notify-jeff-x7p2",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ text: $('Carry Pay').first().json.wamsg }) }}",
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "97e0a2a9-0e44-4247-bb4d-6bc7d957d12a",
+   "name": "Respond Submit Error",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    660,
+    120
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: false, error: $json.error }) }}",
+    "options": {}
+   }
+  },
+  {
+   "id": "fe65c501-0396-4d99-8496-12b5e1f16375",
+   "name": "BCJ Finance Push",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    2420,
+    -100
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://bodybycoachjeff.com/wp-json/bcj-fin/v1/notify",
+    "sendHeaders": true,
+    "headerParameters": {
+     "parameters": [
+      {
+       "name": "x-bcj-fin",
+       "value": "__SECRET__"
+      }
+     ]
+    },
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify({ title: '\\ud83d\\udcb3 New payment: \\u20b1' + Number($('Carry Pay').first().json.amt).toLocaleString('en-US') + ' \\u00b7 ' + $('Carry Pay').first().json.name, text: $('Carry Pay').first().json.label + ' \\u00b7 ' + $('Carry Pay').first().json.method + ' \\u00b7 ref ' + ($('Carry Pay').first().json.ref || '-') + '. Tap to check and approve.' }) }}",
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "77fbc02d-905e-4130-a992-2d5a2e977869",
+   "name": "Pay Status",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    500
+   ],
+   "parameters": {
+    "httpMethod": "GET",
+    "path": "bcj-pay-status",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "https://bodybycoachjeff.com,https://www.bodybycoachjeff.com"
+    }
+   },
+   "webhookId": "bcj-pay-status"
+  },
+  {
+   "id": "2f63b384-f778-4f04-aeaa-274e4c038f20",
+   "name": "Read Pay (status)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    220,
+    500
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values/'Manual%20Payments'!A1%3AV?valueRenderOption=UNFORMATTED_VALUE",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "1520b19b-c28f-4bd7-9bff-f6fc233c1b2b",
+   "name": "Find Pay",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    500
+   ],
+   "parameters": {
+    "jsCode": "const q = $('Pay Status').first().json.query || {}; const id = String(q.id || ''), t = String(q.t || '');\nconst V = $json.values || []; const H = V[0] || []; const i = V.findIndex((r, k) => k > 0 && r[0] === id && r[1] === t);\nif (i < 0) return [{ json: { found: false } }];\nconst o = {}; H.forEach((h, k) => o[h] = V[i][k] === undefined ? '' : V[i][k]);\nconst files = { reserve: '', flb: 'flb', mp: 'mp', bfbm: 'bfbm', bfbw: 'bfbw', 'bundle-men': 'bundle', 'bundle-women': 'bundle', 'all3-men': 'all3', 'all3-women': 'all3' };\nconst next = (o.product === 'reserve' || /^coach/.test(o.product)) ? '/pay/thank-you/?id=' + id + '&t=' + t + '&p=' + o.product : '/ebooks/thank-you/?book=' + (files[o.product] || 'paid') + '&paid=1';\nreturn [{ json: { found: true, status: o.status, product: o.product, label: o.label, amount: o.amount, first: String(o.name).split(' ')[0], next } }];"
+   }
+  },
+  {
+   "id": "3205671d-51da-4d6f-826b-7e51cef3022c",
+   "name": "Respond Pay Status",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    660,
+    500
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify($json) }}",
+    "options": {}
+   }
+  },
+  {
+   "id": "1cf56fa9-49c2-4009-a08b-ab8a963eb2dc",
+   "name": "Pay Decide",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    900
+   ],
+   "parameters": {
+    "httpMethod": "POST",
+    "path": "bcj-pay-decide",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "https://bodybycoachjeff.com,https://www.bodybycoachjeff.com"
+    }
+   },
+   "webhookId": "bcj-pay-decide"
+  },
+  {
+   "id": "1bfb9ae2-0a99-4a1f-9df2-da34a6902df0",
+   "name": "Read Pay (decide)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    220,
+    900
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values/'Manual%20Payments'!A1%3AV?valueRenderOption=UNFORMATTED_VALUE",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "237ed39c-5d07-44bb-8a6d-bd96dc2a61db",
+   "name": "Decide Pay",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    440,
+    900
+   ],
+   "parameters": {
+    "jsCode": "const CAT = {\n  reserve: { label: 'Coaching slot reservation', amount: 1000, files: [] },\n  flb: { label: 'Fat Loss Blueprint (ebook)', amount: 249, files: ['flb'] },\n  mp: { label: 'Pinoy Meal Plan (ebook)', amount: 299, files: ['mp'] },\n  bfbm: { label: \"Built For Busy, Men's edition (ebook)\", amount: 799, files: ['bfbm'] },\n  bfbw: { label: \"Built For Busy, Women's edition (ebook)\", amount: 799, files: ['bfbw'] },\n  'bundle-men': { label: \"Pinoy Meal Plan + Built For Busy, Men's (ebook bundle)\", amount: 999, files: ['mp', 'bfbm'] },\n  'bundle-women': { label: \"Pinoy Meal Plan + Built For Busy, Women's (ebook bundle)\", amount: 999, files: ['mp', 'bfbw'] },\n  'all3-men': { label: \"All 3 ebooks, Men's (Blueprint + Meal Plan + Built For Busy)\", amount: 1199, files: ['flb', 'mp', 'bfbm'] },\n  'all3-women': { label: \"All 3 ebooks, Women's (Blueprint + Meal Plan + Built For Busy)\", amount: 1199, files: ['flb', 'mp', 'bfbw'] },\n  coach12: { label: '12-week 1-on-1 online coaching', amount: 9000, files: [], weeks: 12 },\n  coach16: { label: '16-week 1-on-1 online coaching', amount: 12000, files: [], weeks: 16 },\n  coach24: { label: '24-week 1-on-1 online coaching', amount: 17000, files: [], weeks: 24 }\n};\nconst DRIVEF = { flb: '1VIbXBfVn8_UcSagsmkusRgQgR4Tt4XjH', mp: '1I3dfvFecNJRxjPtfIQt-vy5mlrKqeTuc', bfbm: '1CDw8p6Qmfl-BHZK7ejBBNs3WZY7rnaPH', bfbw: '1c_LL1bLSJp9lvl1fjeS9_oQJDprGYNwF' };\nconst peso = n => '\\u20b1' + Number(n || 0).toLocaleString('en-US');\n\nasync function coachPrice(helpers, P, rawCode, email, mobile) {\n  let pr = {}; try { pr = await helpers.httpRequest({ url: 'https://n8n.srv1170024.hstgr.cloud/webhook/bcj-promo-public', json: true }); } catch (e) {}\n  const r = (pr.rates || []).find(x => Number(x.weeks) === P.weeks) || {};\n  const regular = Number(r.regular || P.amount);\n  const promoPct = (pr.active && Number(pr.slots || 0) > 0) ? Number(pr.pct || 0) : 0;\n  let pct = promoPct, ref = '', why = promoPct ? pr.pct + '% promo' : '';\n  const code = String(rawCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');\n  if (code) { try {\n    const L = await helpers.httpRequest({ url: 'https://bodybycoachjeff.com/wp-json/bcj-ref/v1/lookup?code=' + encodeURIComponent(code) + '&email=' + encodeURIComponent(email || '') + '&mobile=' + encodeURIComponent(mobile || ''), headers: { 'x-bcj-ref': 'bcjref___SECRET__' }, json: true });\n    if (L && L.ok && L.channel && !L.known) { const cf = L.cfg || {}; const base = Number(cf.base || 10), edge = Number(cf.edge ?? 3), cap = Number(cf.cap || 35);\n      let f = Math.max(base, promoPct > 0 ? promoPct + edge : 0); f = Math.min(f, Math.max(promoPct, cap)); pct = f; ref = L.code; why = f + '% off (' + (L.label || L.code) + ')'; }\n    else if (L && L.ok && !L.channel && L.id) { const cf = L.cfg || {}; const rp = Number(cf.ref_pct || 15), edge = Number(cf.edge_pts ?? 5), cap = Number(cf.cap_pct || 35);\n      let f = Math.max(rp, promoPct > 0 ? promoPct + edge : 0); f = Math.min(f, Math.max(promoPct, cap)); pct = f; ref = L.code; why = f + '% off (referral ' + L.code + ')'; }\n  } catch (e) {} }\n  return { amount: Math.round(regular * (100 - pct) / 100), regular, pct, ref, why };\n}\nconst esc = s => String(s == null ? '' : s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));\n\nconst b = $('Pay Decide').first().json.body || {}; const h = $('Pay Decide').first().json.headers || {};\nif ((h['x-bcj-pay'] || b.key || '') !== '__SECRET__') return [{ json: { mode: 'deny', toast: 'denied' } }];\nconst action = b.action === 'ok' ? 'ok' : 'no'; const id = String(b.id || '').trim();\nconst cq = b.cq || {};\nconst base = { query_id: cq.query_id || '', chat_id: cq.chat_id || '1921033615', message_id: cq.message_id || '' };\nif (/^OB:/i.test(id)) return [{ json: Object.assign(base, { mode: 'ob', cid: id.slice(3).toUpperCase(), action, toast: 'Sent to onboarding approval' }) }];\nconst V = $json.values || []; const H = V[0] || []; const i = V.findIndex((r, k) => k > 0 && r[0] === id);\nif (i < 0) return [{ json: Object.assign(base, { mode: 'skip', toast: id + ' not found' }) }];\nconst o = {}; H.forEach((hh, k) => o[hh] = V[i][k] === undefined ? '' : V[i][k]);\nif (o.status === 'approved' || o.status === 'rejected') return [{ json: Object.assign(base, { mode: 'skip', toast: id + ' already ' + o.status }) }];\nconst row = i + 1; const now = $now.setZone('Asia/Manila').toFormat('yyyy-MM-dd HH:mm');\nconst P = Object.assign({ files: [] }, CAT[o.product] || {}, { label: o.label || (CAT[o.product] || {}).label, amount: o.amount });\nconst isCoach = /^coach/.test(o.product);\nconst first = String(o.name || '').split(' ')[0] || 'there';\nconst isRes = o.product === 'reserve';\nconst retry = 'https://bodybycoachjeff.com/pay/?p=' + encodeURIComponent(o.product);\nlet mail, subj;\nif (action === 'ok') {\n  subj = isCoach ? 'Payment confirmed: next, your onboarding form' : isRes ? 'Your coaching slot is reserved' : 'Your ebook from Coach Jeff';\n  mail = isCoach\n    ? 'Hi ' + first + ',\\n\\nPayment received: ' + peso(o.amount_paid || o.amount) + ' (ref ' + (o.ref || '-') + ') for your ' + P.label + '. Welcome to Body by Coach Jeff!\\n\\nYour next step (5 minutes): fill in your onboarding form so I can set up your app, meal plan and program:\\nhttps://bodybycoachjeff.com/onboarding/?pay=' + id + '\\n\\nAfter that, we book your onboarding call and you start on a Monday.\\n\\nSalamat,\\nCoach Jeff'\n    : isRes\n    ? 'Hi ' + first + ',\\n\\nPayment received: ' + peso(o.amount_paid || o.amount) + ' (ref ' + (o.ref || '-') + '). Your 1-on-1 coaching slot is reserved' + (o.start_pref ? ' for a ' + o.start_pref + ' start' : '') + ' and today\\'s promo price is locked.\\n\\nWhat happens next:\\n1. I will message you on WhatsApp' + (o.wa ? ' (' + o.wa + ')' : '') + ' within the day.\\n2. We have a quick chat about your goal and schedule.\\n3. I send your sign-up link. The full \u20b11,000 is credited to your package.\\n\\nCompare packages anytime: https://bodybycoachjeff.com/inquiry/\\n\\nSalamat,\\nCoach Jeff'\n    : 'Hi ' + first + ',\\n\\nPayment received: ' + peso(o.amount_paid || o.amount) + ' (ref ' + (o.ref || '-') + '). Thank you for getting ' + P.label + '!\\n\\nYour PDF' + (P.files.length > 1 ? 's are' : ' is') + ' attached. Read it on your phone, tablet or computer.\\n\\nWant it done for you? What you paid comes off your first coaching package if you join within 30 days: https://bodybycoachjeff.com/inquiry/\\n\\nSalamat,\\nCoach Jeff';\n} else {\n  subj = 'About your payment to Coach Jeff';\n  mail = 'Hi ' + first + ',\\n\\nI could not confirm the payment screenshot you uploaded for ' + P.label + '. Please upload a clear screenshot that shows the amount and reference number here:\\n' + retry + '\\n\\nIf you already sent it on WhatsApp, no worries, I will check it there.\\n\\nCoach Jeff';\n}\nconst reply = (action === 'ok' ? '\u2705 <b>Approved</b> ' : '\u274c <b>Rejected</b> ') + id + ' \u00b7 ' + esc(P.label) + ' \u00b7 ' + peso(o.amount_paid || o.amount) + '\\n' + esc(o.name) + (action === 'ok' ? (isCoach ? '\\nOnboarding form link emailed. Promo slot: update in Outreach if a promo applied' : isRes ? '\\nConfirmation email sent. Message them on WhatsApp' + (o.wa ? ': ' + esc(o.wa) : '') : '\\nEbook emailed to ' + esc(o.email)) : '\\nRe-upload email sent');\nreturn [{ json: Object.assign(base, { mode: action, id, row, o, now, email: o.email, subj, mail, reply, toast: (action === 'ok' ? 'Approved ' : 'Rejected ') + id,\n  isEbook: action === 'ok' && P.files.length > 0, files: P.files.map(k => DRIVEF[k]).filter(Boolean),\n  sheet: { valueInputOption: 'RAW', data: [{ range: \"'Manual Payments'!O\" + row + ':P' + row, values: [[action === 'ok' ? 'approved' : 'rejected', now]] }] } }) }];\n"
+   }
+  },
+  {
+   "id": "f9ff06ad-9a7f-4064-8b08-4e100066760b",
+   "name": "Route Pay",
+   "type": "n8n-nodes-base.switch",
+   "typeVersion": 3,
+   "position": [
+    660,
+    900
+   ],
+   "parameters": {
+    "rules": {
+     "values": [
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "conditions": [
+         {
+          "id": "3483a13b-dfa4-4fc4-bc41-3a42fe1fc9c3",
+          "leftValue": "={{ $json.mode }}",
+          "rightValue": "ok",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ],
+        "combinator": "and"
+       },
+       "renameOutput": true,
+       "outputKey": "ok"
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "conditions": [
+         {
+          "id": "ea054460-9a93-4607-bf4d-51a1c7e045fe",
+          "leftValue": "={{ $json.mode }}",
+          "rightValue": "no",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ],
+        "combinator": "and"
+       },
+       "renameOutput": true,
+       "outputKey": "no"
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "conditions": [
+         {
+          "id": "623ad2a9-eb0d-4c3d-b1bf-53c717fe84d0",
+          "leftValue": "={{ $json.mode }}",
+          "rightValue": "ob",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ],
+        "combinator": "and"
+       },
+       "renameOutput": true,
+       "outputKey": "ob"
+      },
+      {
+       "conditions": {
+        "options": {
+         "caseSensitive": true,
+         "leftValue": "",
+         "typeValidation": "strict",
+         "version": 2
+        },
+        "conditions": [
+         {
+          "id": "49142ee2-4851-45f5-958e-aac22c328369",
+          "leftValue": "={{ $json.mode }}",
+          "rightValue": "skip",
+          "operator": {
+           "type": "string",
+           "operation": "equals"
+          }
+         }
+        ],
+        "combinator": "and"
+       },
+       "renameOutput": true,
+       "outputKey": "skip"
+      }
+     ]
+    },
+    "options": {
+     "fallbackOutput": "extra"
+    }
+   }
+  },
+  {
+   "id": "6058cd8c-8688-4752-8c72-f41bfabb22d9",
+   "name": "Mark Pay Decided",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    880,
+    820
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values:batchUpdate",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($('Decide Pay').first().json.sheet) }}",
+    "options": {
+     "timeout": 20000
+    },
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "a0475c4d-ed96-4ae9-b8e0-af0769f1d1e5",
+   "name": "Ebook?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2,
+   "position": [
+    1100,
+    820
+   ],
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "1edcad7b-ae0b-465f-a500-820ead9e443f",
+       "leftValue": "={{ $('Decide Pay').first().json.isEbook }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   }
+  },
+  {
+   "id": "b1dd278d-0d58-4c60-839a-87b3ebd6e4f2",
+   "name": "Split Ebooks",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1320,
+    720
+   ],
+   "parameters": {
+    "jsCode": "return $('Decide Pay').first().json.files.map(id => ({ json: { id } }));"
+   }
+  },
+  {
+   "id": "d1c1e83f-589f-47e0-9684-9dfa6b14ad76",
+   "name": "Download Ebook",
+   "type": "n8n-nodes-base.googleDrive",
+   "typeVersion": 3,
+   "position": [
+    1540,
+    720
+   ],
+   "parameters": {
+    "operation": "download",
+    "fileId": {
+     "__rl": true,
+     "value": "={{ $json.id }}",
+     "mode": "id"
+    },
+    "options": {}
+   },
+   "credentials": {
+    "googleDriveOAuth2Api": {
+     "id": "es1h5Z5Qp1Hcy9Dp",
+     "name": "Google Drive (cealagar@gmail.com)"
+    }
+   }
+  },
+  {
+   "id": "80b8c76a-0510-443d-b2f2-e2e11a3e7e8e",
+   "name": "Merge Ebooks",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1760,
+    720
+   ],
+   "parameters": {
+    "jsCode": "const out = { json: $('Decide Pay').first().json, binary: {} };\n$input.all().forEach((it, i) => { const k = Object.keys(it.binary || {})[0]; if (k) out.binary['attachment_' + i] = it.binary[k]; });\nreturn [out];"
+   }
+  },
+  {
+   "id": "e13414c3-374a-4beb-8900-f1857c6cf3dc",
+   "name": "Email Ebook",
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    1980,
+    720
+   ],
+   "parameters": {
+    "sendTo": "={{ $('Decide Pay').first().json.email }}",
+    "subject": "={{ $('Decide Pay').first().json.subj }}",
+    "emailType": "text",
+    "message": "={{ $('Decide Pay').first().json.mail }}",
+    "options": {
+     "appendAttribution": false,
+     "senderName": "Coach Jeff Alagar",
+     "attachmentsUi": {
+      "attachmentsBinary": [
+       {
+        "property": "={{ Object.keys($binary || {}).join(',') }}"
+       }
+      ]
+     }
+    }
+   },
+   "credentials": {
+    "gmailOAuth2": {
+     "id": "aOCooDwd0R5X21l6",
+     "name": "Gmail (coach@jeffalagar.com)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "df9602b5-5bf8-4997-847c-f4179cecf9f0",
+   "name": "Email Buyer",
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    1320,
+    900
+   ],
+   "parameters": {
+    "sendTo": "={{ $('Decide Pay').first().json.email }}",
+    "subject": "={{ $('Decide Pay').first().json.subj }}",
+    "emailType": "text",
+    "message": "={{ $('Decide Pay').first().json.mail }}",
+    "options": {
+     "appendAttribution": false,
+     "senderName": "Coach Jeff Alagar"
+    }
+   },
+   "credentials": {
+    "gmailOAuth2": {
+     "id": "aOCooDwd0R5X21l6",
+     "name": "Gmail (coach@jeffalagar.com)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "ebbbda2d-8ffc-44a6-b136-9a441f5b7d11",
+   "name": "Pay Tracking",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    1320,
+    1000
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Decide Pay').first().json; const o = d.o; const k = {\"ga4_measurement_id\": \"G-BNNGFWSBM0\", \"ga4_api_secret\": \"KsIXxcJ8SbGA6TYkPnL-bA\", \"meta_pixel_id\": \"1401200798595392\", \"meta_capi_token\": \"__META_CAPI_TOKEN__\"};\nif (/^TEST/i.test(String(o.name || ''))) return [];\nfunction sha256(a){function r(n,x){return(x>>>n)|(x<<(32-n))}var K=[],H=[],p=2,i,j;for(;K.length<64;p++){for(i=2;i*i<=p&&p%i;i++);if(i*i>p){H.length<8&&H.push((Math.pow(p,1/2)*4294967296)|0);K.push((Math.pow(p,1/3)*4294967296)|0)}}a=unescape(encodeURIComponent(a));var l=a.length*8,w=[];a+='\\x80';while(a.length%64-56)a+='\\x00';for(i=0;i<a.length;i++){j=a.charCodeAt(i);w[i>>2]|=j<<((3-i)%4)*8}w[w.length]=((l/4294967296)|0);w[w.length]=l;var h=H.slice(0);for(j=0;j<w.length;){var W=w.slice(j,j+=16),o=h.slice(0);for(i=0;i<64;i++){var w15=W[i-15],w2=W[i-2],a0=h[0],e=h[4],t1=h[7]+(r(6,e)^r(11,e)^r(25,e))+((e&h[5])^(~e&h[6]))+K[i]+(W[i]=i<16?W[i]:(W[i-16]+(r(7,w15)^r(18,w15)^(w15>>>3))+W[i-7]+(r(17,w2)^r(19,w2)^(w2>>>10)))|0),t2=(r(2,a0)^r(13,a0)^r(22,a0))+((a0&h[1])^(a0&h[2])^(h[1]&h[2]));h=[(t1+t2)|0].concat(h);h[4]=(h[4]+t1)|0;h.pop()}for(i=0;i<8;i++)h[i]=(h[i]+o[i])|0}var s='';for(i=0;i<8;i++)for(j=3;j+1;j--){var b=(h[i]>>(j*8))&255;s+=(b<16?'0':'')+b.toString(16)}return s}\nconst h = s => s ? sha256(s) : '';\nconst em = h(String(o.email || '').trim().toLowerCase());\nlet ph = String(o.wa || '').replace(/[^0-9]/g, ''); if (ph.startsWith('0')) ph = '63' + ph.slice(1);\nconst phh = h(ph);\nconst cid = o.ga_cid || ((em || String(Date.now())).slice(0, 10) + '.' + (em || String(Date.now())).slice(10, 20));\nconst value = Number(o.amount) || 0; const item = o.product === 'reserve' ? 'coaching-reservation' : /^coach/.test(o.product) ? 'coaching-' + o.product.slice(5) + 'w' : 'ebook-' + o.product;\nconst params = { currency: 'PHP', value, transaction_id: d.id, items: [{ item_id: item, item_name: o.label, price: value, quantity: 1 }] };\nif (o.ga_sid) { params.session_id = o.ga_sid; params.engagement_time_msec = 1; }\nconst events = [{ name: 'purchase', params }];\nif (o.product === 'reserve') events.push({ name: 'reservation_paid', params: { currency: 'PHP', value, start_pref: o.start_pref || '' } });\nconst ud = {}; if (em) ud.em = [em]; if (phh) ud.ph = [phh]; if (o.fbp) ud.fbp = o.fbp; if (o.fbc) ud.fbc = o.fbc;\nreturn [{ json: { ga_url: 'https://www.google-analytics.com/mp/collect?measurement_id=' + k.ga4_measurement_id + '&api_secret=' + k.ga4_api_secret, ga: { client_id: cid, events },\n  meta_url: 'https://graph.facebook.com/v21.0/' + k.meta_pixel_id + '/events?access_token=' + k.meta_capi_token,\n  meta: { data: [{ event_name: 'Purchase', event_time: Math.floor(Date.now() / 1000), event_id: d.id, action_source: 'website', event_source_url: o.page || 'https://bodybycoachjeff.com/pay/', user_data: ud, custom_data: { currency: 'PHP', value, content_name: o.label, content_ids: [item], content_type: 'product' } }] } } }];\n"
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "e26d72d0-3c52-496f-9f7c-17791fde869b",
+   "name": "GA4 Pay (MP)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1540,
+    960
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $json.ga_url }}",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.ga) }}",
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "e0b445cc-8743-4d30-9eae-1c9440e69676",
+   "name": "Meta Pay (CAPI)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    1540,
+    1060
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "={{ $json.meta_url }}",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($json.meta) }}",
+    "options": {
+     "timeout": 20000
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "f5214d62-c38f-4618-bdfb-2e8b67035928",
+   "name": "Mark Pay Rejected",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    880,
+    1000
+   ],
+   "parameters": {
+    "method": "POST",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values:batchUpdate",
+    "sendBody": true,
+    "specifyBody": "json",
+    "jsonBody": "={{ JSON.stringify($('Decide Pay').first().json.sheet) }}",
+    "options": {
+     "timeout": 20000
+    },
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api"
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "1af32441-bd3a-4c3a-8464-687b3d76c89c",
+   "name": "Email Re-upload",
+   "type": "n8n-nodes-base.gmail",
+   "typeVersion": 2.1,
+   "position": [
+    1100,
+    1000
+   ],
+   "parameters": {
+    "sendTo": "={{ $('Decide Pay').first().json.email }}",
+    "subject": "={{ $('Decide Pay').first().json.subj }}",
+    "emailType": "text",
+    "message": "={{ $('Decide Pay').first().json.mail }}",
+    "options": {
+     "appendAttribution": false,
+     "senderName": "Coach Jeff Alagar"
+    }
+   },
+   "credentials": {
+    "gmailOAuth2": {
+     "id": "aOCooDwd0R5X21l6",
+     "name": "Gmail (coach@jeffalagar.com)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "238cdc90-71cf-4520-a034-7a43a2143ddd",
+   "name": "OB Callback",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    880,
+    1160
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Decide Pay').first().json;\nreturn [{ json: { callback_query: { id: '', data: 'pay:' + d.action + ':' + d.cid, from: { id: 1921033615 }, message: { chat: { id: 1921033615 }, message_id: '' } } } }];"
+   }
+  },
+  {
+   "id": "d61f7f90-ff15-48a5-a244-fcece2ade28d",
+   "name": "Run OB Decision",
+   "type": "n8n-nodes-base.executeWorkflow",
+   "typeVersion": 1.2,
+   "position": [
+    1100,
+    1160
+   ],
+   "parameters": {
+    "source": "database",
+    "workflowId": {
+     "__rl": true,
+     "value": "f22QgBRXbIxV2OYZ",
+     "mode": "id"
+    },
+    "mode": "once",
+    "options": {
+     "waitForSubWorkflow": false
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "58bc63ef-d0e7-4156-bd69-67071433fffa",
+   "name": "Reply Data",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    2200,
+    900
+   ],
+   "parameters": {
+    "jsCode": "const d = $('Decide Pay').first().json; return [{ json: d }];"
+   }
+  },
+  {
+   "id": "b6724700-709c-4149-a111-c99d58a0d5ef",
+   "name": "From Telegram?",
+   "type": "n8n-nodes-base.if",
+   "typeVersion": 2,
+   "position": [
+    2420,
+    900
+   ],
+   "parameters": {
+    "conditions": {
+     "options": {
+      "caseSensitive": true,
+      "leftValue": "",
+      "typeValidation": "loose",
+      "version": 2
+     },
+     "conditions": [
+      {
+       "id": "452d6b21-b546-472e-a1f7-b15ba0ce1748",
+       "leftValue": "={{ !!$json.query_id }}",
+       "rightValue": "",
+       "operator": {
+        "type": "boolean",
+        "operation": "true",
+        "singleValue": true
+       }
+      }
+     ],
+     "combinator": "and"
+    },
+    "options": {}
+   }
+  },
+  {
+   "id": "0228961f-26f7-4ba0-92bf-dc45eb07aaa9",
+   "name": "Answer Tap",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    2640,
+    820
+   ],
+   "parameters": {
+    "resource": "callback",
+    "operation": "answerQuery",
+    "queryId": "={{ $json.query_id }}",
+    "additionalFields": {
+     "text": "={{ $json.toast }}"
+    }
+   },
+   "credentials": {
+    "telegramApi": {
+     "id": "KJCTPoHveAmhDi5Z",
+     "name": "Telegram (bbcj_dave_bot)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "4c5b0c6a-9042-4abd-b29f-3fac66993930",
+   "name": "Reply Decision",
+   "type": "n8n-nodes-base.telegram",
+   "typeVersion": 1.2,
+   "position": [
+    2860,
+    900
+   ],
+   "parameters": {
+    "chatId": "={{ $('Decide Pay').first().json.chat_id }}",
+    "text": "={{ $('Decide Pay').first().json.reply || $('Decide Pay').first().json.toast }}",
+    "additionalFields": {
+     "appendAttribution": false,
+     "parse_mode": "HTML",
+     "disable_web_page_preview": true
+    }
+   },
+   "credentials": {
+    "telegramApi": {
+     "id": "KJCTPoHveAmhDi5Z",
+     "name": "Telegram (bbcj_dave_bot)"
+    }
+   },
+   "onError": "continueRegularOutput"
+  },
+  {
+   "id": "b3318683-06c6-471c-b776-b0b25922f165",
+   "name": "Respond Decide",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    3080,
+    900
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify({ ok: $('Decide Pay').first().json.mode !== 'deny', mode: $('Decide Pay').first().json.mode, toast: $('Decide Pay').first().json.toast }) }}",
+    "options": {}
+   }
+  },
+  {
+   "id": "f535bf27-2e33-4d38-9a39-af58c274cbff",
+   "name": "Pay Quote",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    1250
+   ],
+   "parameters": {
+    "httpMethod": "GET",
+    "path": "bcj-pay-quote",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "https://bodybycoachjeff.com,https://www.bodybycoachjeff.com"
+    }
+   },
+   "webhookId": "bcj-pay-quote"
+  },
+  {
+   "id": "82ef11b8-ab62-41bb-adf7-4c6726588f12",
+   "name": "Quote",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    220,
+    1250
+   ],
+   "parameters": {
+    "jsCode": "const CAT = {\n  reserve: { label: 'Coaching slot reservation', amount: 1000, files: [] },\n  flb: { label: 'Fat Loss Blueprint (ebook)', amount: 249, files: ['flb'] },\n  mp: { label: 'Pinoy Meal Plan (ebook)', amount: 299, files: ['mp'] },\n  bfbm: { label: \"Built For Busy, Men's edition (ebook)\", amount: 799, files: ['bfbm'] },\n  bfbw: { label: \"Built For Busy, Women's edition (ebook)\", amount: 799, files: ['bfbw'] },\n  'bundle-men': { label: \"Pinoy Meal Plan + Built For Busy, Men's (ebook bundle)\", amount: 999, files: ['mp', 'bfbm'] },\n  'bundle-women': { label: \"Pinoy Meal Plan + Built For Busy, Women's (ebook bundle)\", amount: 999, files: ['mp', 'bfbw'] },\n  'all3-men': { label: \"All 3 ebooks, Men's (Blueprint + Meal Plan + Built For Busy)\", amount: 1199, files: ['flb', 'mp', 'bfbm'] },\n  'all3-women': { label: \"All 3 ebooks, Women's (Blueprint + Meal Plan + Built For Busy)\", amount: 1199, files: ['flb', 'mp', 'bfbw'] },\n  coach12: { label: '12-week 1-on-1 online coaching', amount: 9000, files: [], weeks: 12 },\n  coach16: { label: '16-week 1-on-1 online coaching', amount: 12000, files: [], weeks: 16 },\n  coach24: { label: '24-week 1-on-1 online coaching', amount: 17000, files: [], weeks: 24 }\n};\nconst DRIVEF = { flb: '1VIbXBfVn8_UcSagsmkusRgQgR4Tt4XjH', mp: '1I3dfvFecNJRxjPtfIQt-vy5mlrKqeTuc', bfbm: '1CDw8p6Qmfl-BHZK7ejBBNs3WZY7rnaPH', bfbw: '1c_LL1bLSJp9lvl1fjeS9_oQJDprGYNwF' };\nconst peso = n => '\\u20b1' + Number(n || 0).toLocaleString('en-US');\n\nasync function coachPrice(helpers, P, rawCode, email, mobile) {\n  let pr = {}; try { pr = await helpers.httpRequest({ url: 'https://n8n.srv1170024.hstgr.cloud/webhook/bcj-promo-public', json: true }); } catch (e) {}\n  const r = (pr.rates || []).find(x => Number(x.weeks) === P.weeks) || {};\n  const regular = Number(r.regular || P.amount);\n  const promoPct = (pr.active && Number(pr.slots || 0) > 0) ? Number(pr.pct || 0) : 0;\n  let pct = promoPct, ref = '', why = promoPct ? pr.pct + '% promo' : '';\n  const code = String(rawCode || '').toUpperCase().replace(/[^A-Z0-9]/g, '');\n  if (code) { try {\n    const L = await helpers.httpRequest({ url: 'https://bodybycoachjeff.com/wp-json/bcj-ref/v1/lookup?code=' + encodeURIComponent(code) + '&email=' + encodeURIComponent(email || '') + '&mobile=' + encodeURIComponent(mobile || ''), headers: { 'x-bcj-ref': 'bcjref___SECRET__' }, json: true });\n    if (L && L.ok && L.channel && !L.known) { const cf = L.cfg || {}; const base = Number(cf.base || 10), edge = Number(cf.edge ?? 3), cap = Number(cf.cap || 35);\n      let f = Math.max(base, promoPct > 0 ? promoPct + edge : 0); f = Math.min(f, Math.max(promoPct, cap)); pct = f; ref = L.code; why = f + '% off (' + (L.label || L.code) + ')'; }\n    else if (L && L.ok && !L.channel && L.id) { const cf = L.cfg || {}; const rp = Number(cf.ref_pct || 15), edge = Number(cf.edge_pts ?? 5), cap = Number(cf.cap_pct || 35);\n      let f = Math.max(rp, promoPct > 0 ? promoPct + edge : 0); f = Math.min(f, Math.max(promoPct, cap)); pct = f; ref = L.code; why = f + '% off (referral ' + L.code + ')'; }\n  } catch (e) {} }\n  return { amount: Math.round(regular * (100 - pct) / 100), regular, pct, ref, why };\n}\nconst esc = s => String(s == null ? '' : s).replace(/[<>&]/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;' }[c]));\nconst q = $json.query || {}; const P = Object.assign({}, CAT[String(q.p || '')] || {});\nif (!P.label) return [{ json: { ok: false } }];\nif (P.weeks) { const r = await coachPrice(this.helpers, P, q.code, q.email, q.wa); return [{ json: { ok: true, product: q.p, label: P.label, amount: r.amount, regular: r.regular, pct: r.pct, why: r.why, code: r.ref } }]; }\nreturn [{ json: { ok: true, product: q.p, label: P.label, amount: P.amount } }];"
+   }
+  },
+  {
+   "id": "a3893fba-0f57-4f2c-8557-e6b3b53446f0",
+   "name": "Respond Quote",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    440,
+    1250
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify($json) }}",
+    "options": {}
+   }
+  },
+  {
+   "id": "3c976ed2-b70d-4280-8d16-1eceedf717d1",
+   "name": "Pay List",
+   "type": "n8n-nodes-base.webhook",
+   "typeVersion": 2,
+   "position": [
+    0,
+    1400
+   ],
+   "parameters": {
+    "httpMethod": "GET",
+    "path": "bcj-pay-list",
+    "responseMode": "responseNode",
+    "options": {
+     "allowedOrigins": "https://bodybycoachjeff.com,https://www.bodybycoachjeff.com"
+    }
+   },
+   "webhookId": "bcj-pay-list"
+  },
+  {
+   "id": "59acaf22-dc26-4622-9798-639935ee2423",
+   "name": "Read All (list)",
+   "type": "n8n-nodes-base.httpRequest",
+   "typeVersion": 4.2,
+   "position": [
+    220,
+    1400
+   ],
+   "parameters": {
+    "method": "GET",
+    "url": "https://sheets.googleapis.com/v4/spreadsheets/1rPSr-I2CYIx-jL_9rVSXG6MnRxH1hzFK83v0lhuTDuk/values:batchGet?valueRenderOption=UNFORMATTED_VALUE&ranges='Manual%20Payments'!A1%3AX&ranges='Onboarding%20Portal'!A1%3AV&ranges=Payments!A1%3AQ&ranges='Ad%20Spend'!A1%3AI&ranges='Ad%20Billing'!A1%3AG",
+    "authentication": "predefinedCredentialType",
+    "nodeCredentialType": "googleSheetsOAuth2Api",
+    "options": {}
+   },
+   "credentials": {
+    "googleSheetsOAuth2Api": {
+     "id": "qZyQAb3W6ZGceTJr",
+     "name": "Google Sheets (cealagar@gmail.com)"
+    }
+   },
+   "retryOnFail": true,
+   "maxTries": 3,
+   "waitBetweenTries": 2000
+  },
+  {
+   "id": "c1b5f9ec-a0ae-4444-830e-077ff527430d",
+   "name": "Build List",
+   "type": "n8n-nodes-base.code",
+   "typeVersion": 2,
+   "position": [
+    660,
+    1400
+   ],
+   "parameters": {
+    "jsCode": "const h = $('Pay List').first().json.headers || {}; const q = $('Pay List').first().json.query || {};\nif ((h['x-bcj-pay'] || q.key || '') !== '__SECRET__') return [{ json: { ok: false, error: 'denied' } }];\nconst rows = (V) => { const H = V[0] || []; return V.slice(1).map(r => { const o = {}; H.forEach((hh, k) => o[hh] = r[k] === undefined ? '' : r[k]); return o; }); };\nconst VR = ($('Read All (list)').first().json.valueRanges || []).map(v => v.values || []);\nconst M = rows(VR[0] || []);\nconst O = rows(VR[1] || []);\nconst PAY = rows(VR[2] || []);\nconst ADS = rows(VR[3] || []);\nconst BIL = rows(VR[4] || []);\nconst items = [];\nM.forEach(o => { if (!o.id) return; items.push({ id: o.id, src: 'shop', label: o.label, product: o.product, expected: o.amount, paid: o.amount_paid, name: o.name, email: o.email, wa: o.wa, method: o.method, ref: o.ref, start: o.start_pref, receipt: o.receipt_url, status: o.status, created: o.created, decided: o.decided }); });\nO.forEach(o => { if (!o.client_id || !['receipt_submitted', 'paid', 'receipt_rejected'].includes(o.status)) return;\n  items.push({ id: 'OB:' + o.client_id, src: 'coaching', label: o.weeks + '-week coaching (' + o.client_id + ')', product: 'coaching', expected: o.amount_due, paid: o.amount_paid, name: (o.first_name + ' ' + o.last_name).trim(), email: o.email, wa: o.mobile, method: o.method, ref: '', start: '', receipt: o.receipt_url,\n    status: o.status === 'receipt_submitted' ? 'submitted' : o.status === 'paid' ? 'approved' : 'rejected', created: o.submitted || o.created, decided: o.decided }); });\nitems.sort((a, b) => String(b.created).localeCompare(String(a.created)));\nconst pending = items.filter(x => x.status === 'submitted');\nconst out = { ok: true, pending, recent: items.filter(x => x.status !== 'submitted').slice(0, 25) };\nif (q.all) {\n  const L = [];\n  const nd = v => { if (typeof v === 'number' || /^\\d+(\\.\\d+)?$/.test(String(v))) { const d = new Date(Date.UTC(1899, 11, 30) + Number(v) * 864e5); return d.toISOString().slice(0, 16).replace('T', ' '); }\n    const m = String(v).match(/^(\\d{1,2})\\/(\\d{1,2})\\/(\\d{4})/); if (m) return m[3] + '-' + m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0'); return String(v); };\n  PAY.forEach(o => { if (!o.client_id || !/paid|approved/i.test(o.status)) return; L.push({ date: nd(o.date_ph), kind: /renewal|season/i.test(String(o.note)) ? 'renewal' : 'coaching', label: o.weeks + '-week coaching' + (o.note ? ' \\u00b7 ' + o.note : ''), name: o.name, id: o.client_id, amount: Number(o.amount_paid || o.amount_due || 0), method: o.method, by: o.decided_by, receipt: o.receipt_url, ref: o.receipt_no }); });\n  M.forEach(o => { if (!o.id || o.status !== 'approved' || /^TEST/i.test(String(o.name))) return; if (/^coach/.test(o.product) && o.linked_cid) return;\n    L.push({ date: nd(o.decided || o.created), kind: o.product === 'reserve' ? 'reservation' : /^coach/.test(o.product) ? 'coaching' : 'ebook', label: o.label, name: o.name, id: o.id, amount: Number(o.amount_paid || o.amount || 0), method: o.method, by: 'approved', receipt: o.receipt_url, ref: o.ref }); });\n  out.ads = { daily: ADS.filter(o => o.date).map(o => ({ date: String(o.date), campaign: o.campaign, spend: Number(o.spend || 0), leads: Number(o.leads || 0), messages: Number(o.messages || 0), clicks: Number(o.clicks || 0) })),\n    billing: BIL.filter(o => o.date).map(o => ({ date: String(o.date), id: String(o.id || ''), amount: Number(o.amount || 0), status: o.status, reason: o.reason, payment: o.payment })),\n    synced: (ADS[0] || {}).updated || '' };\n  out.ledger = L; out.rejected = items.filter(x => x.status === 'rejected').length;\n}\nreturn [{ json: out }];"
+   }
+  },
+  {
+   "id": "189d4ce3-9586-4455-ba2b-fea238c77f9a",
+   "name": "Respond List",
+   "type": "n8n-nodes-base.respondToWebhook",
+   "typeVersion": 1.1,
+   "position": [
+    880,
+    1400
+   ],
+   "parameters": {
+    "respondWith": "json",
+    "responseBody": "={{ JSON.stringify($json) }}",
+    "options": {}
+   }
+  }
+ ],
+ "connections": {
+  "Pay Submit": {
+   "main": [
+    [
+     {
+      "node": "Prep Submit",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Prep Submit": {
+   "main": [
+    [
+     {
+      "node": "Submit OK?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Submit OK?": {
+   "main": [
+    [
+     {
+      "node": "Save Pay Receipt",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Respond Submit Error",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Save Pay Receipt": {
+   "main": [
+    [
+     {
+      "node": "Carry Pay",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Carry Pay": {
+   "main": [
+    [
+     {
+      "node": "Append Pay Row",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Append Pay Row": {
+   "main": [
+    [
+     {
+      "node": "Respond Submit OK",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Respond Submit OK": {
+   "main": [
+    [
+     {
+      "node": "Restore Receipt",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Restore Receipt": {
+   "main": [
+    [
+     {
+      "node": "Pay is image?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay is image?": {
+   "main": [
+    [
+     {
+      "node": "TG Pay Photo",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "TG Pay File",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "TG Pay Photo": {
+   "main": [
+    [
+     {
+      "node": "WA Pay Alert",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "TG Pay File": {
+   "main": [
+    [
+     {
+      "node": "WA Pay Alert",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "WA Pay Alert": {
+   "main": [
+    [
+     {
+      "node": "BCJ Finance Push",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay Status": {
+   "main": [
+    [
+     {
+      "node": "Read Pay (status)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Pay (status)": {
+   "main": [
+    [
+     {
+      "node": "Find Pay",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Find Pay": {
+   "main": [
+    [
+     {
+      "node": "Respond Pay Status",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay Decide": {
+   "main": [
+    [
+     {
+      "node": "Read Pay (decide)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read Pay (decide)": {
+   "main": [
+    [
+     {
+      "node": "Decide Pay",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Decide Pay": {
+   "main": [
+    [
+     {
+      "node": "Route Pay",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Route Pay": {
+   "main": [
+    [
+     {
+      "node": "Mark Pay Decided",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Mark Pay Rejected",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "OB Callback",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Reply Data",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Respond Decide",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Pay Decided": {
+   "main": [
+    [
+     {
+      "node": "Ebook?",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "Pay Tracking",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Ebook?": {
+   "main": [
+    [
+     {
+      "node": "Split Ebooks",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Email Buyer",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Split Ebooks": {
+   "main": [
+    [
+     {
+      "node": "Download Ebook",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Download Ebook": {
+   "main": [
+    [
+     {
+      "node": "Merge Ebooks",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Merge Ebooks": {
+   "main": [
+    [
+     {
+      "node": "Email Ebook",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Email Ebook": {
+   "main": [
+    [
+     {
+      "node": "Reply Data",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Email Buyer": {
+   "main": [
+    [
+     {
+      "node": "Reply Data",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay Tracking": {
+   "main": [
+    [
+     {
+      "node": "GA4 Pay (MP)",
+      "type": "main",
+      "index": 0
+     },
+     {
+      "node": "Meta Pay (CAPI)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Mark Pay Rejected": {
+   "main": [
+    [
+     {
+      "node": "Email Re-upload",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Email Re-upload": {
+   "main": [
+    [
+     {
+      "node": "Reply Data",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "OB Callback": {
+   "main": [
+    [
+     {
+      "node": "Run OB Decision",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Run OB Decision": {
+   "main": [
+    [
+     {
+      "node": "Respond Decide",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Reply Data": {
+   "main": [
+    [
+     {
+      "node": "From Telegram?",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "From Telegram?": {
+   "main": [
+    [
+     {
+      "node": "Answer Tap",
+      "type": "main",
+      "index": 0
+     }
+    ],
+    [
+     {
+      "node": "Reply Decision",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Answer Tap": {
+   "main": [
+    [
+     {
+      "node": "Reply Decision",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Reply Decision": {
+   "main": [
+    [
+     {
+      "node": "Respond Decide",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay Quote": {
+   "main": [
+    [
+     {
+      "node": "Quote",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Quote": {
+   "main": [
+    [
+     {
+      "node": "Respond Quote",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Pay List": {
+   "main": [
+    [
+     {
+      "node": "Read All (list)",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Read All (list)": {
+   "main": [
+    [
+     {
+      "node": "Build List",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  },
+  "Build List": {
+   "main": [
+    [
+     {
+      "node": "Respond List",
+      "type": "main",
+      "index": 0
+     }
+    ]
+   ]
+  }
+ },
+ "settings": {
+  "executionOrder": "v1",
+  "timezone": "Asia/Manila"
+ }
+}
